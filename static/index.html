@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Govee Mapper</title>
+<style>
+  :root{--bg:#111;--panel:#1e1e1e;--accent:#00c853;--text:#eee;--muted:#888;--border:#333}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+    font-family:-apple-system,"Segoe UI",Roboto,sans-serif;overscroll-behavior:none}
+  body{display:flex;flex-direction:column}
+  header{padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--border);
+    display:flex;gap:8px;align-items:center;font-size:14px}
+  header .status{flex:1;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  header .status.connected{color:var(--accent)}
+  header a{color:#8ab4ff;text-decoration:none;font-size:13px;white-space:nowrap}
+  button{padding:10px 14px;border-radius:8px;border:1px solid var(--border);
+    background:#2a2a2a;color:var(--text);font-size:14px;cursor:pointer}
+  button:active{background:#3a3a3a}
+  button:disabled{opacity:.45}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#000;font-weight:600}
+  main{flex:1;overflow:auto;padding:12px;max-width:640px;width:100%;margin:0 auto}
+  main label{display:block;font-size:12px;color:#aaa}
+  main input,main select,dialog input,dialog select{width:100%;padding:10px;margin:4px 0 10px;border-radius:6px;
+    border:1px solid var(--border);background:#2a2a2a;color:var(--text);font-size:14px}
+  .row{display:flex;gap:8px}
+  .row button{flex:1}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 10px}
+  dialog{border:1px solid var(--border);border-radius:12px;background:var(--panel);
+    color:var(--text);padding:20px;width:min(440px,94vw);max-height:92vh;overflow:auto}
+  dialog::backdrop{background:rgba(0,0,0,.6)}
+  dialog .row{justify-content:flex-end}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="status" id="status">Not connected</span>
+  <button id="btnDisconnect" hidden>Disconnect</button>
+  <button id="btnConnect" class="primary">Connect</button>
+</header>
+
+<main>
+  <div id="binBox" style="background:#000;border-radius:8px;overflow:hidden;position:relative;margin:0 auto 10px;width:100%;aspect-ratio:16/9">
+    <video id="binVideo" autoplay playsinline muted
+           style="position:absolute;top:0;left:0;width:100%;height:100%;display:block;object-fit:contain"></video>
+    <canvas id="binOverlay"
+            style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none"></canvas>
+    <div id="binHud"
+         style="position:absolute;bottom:6px;left:6px;padding:4px 8px;
+                background:rgba(0,0,0,.75);border-radius:4px;font-size:12px;color:#0f0">ready</div>
+  </div>
+
+  <div class="row">
+    <button id="binStop" disabled>Stop</button>
+    <button id="binStart" class="primary">Scan</button>
+  </div>
+  <div id="binProgress" style="font-size:12px;color:#aaa;margin:8px 0 12px;white-space:pre-line"></div>
+
+  <div class="grid2">
+    <div style="grid-column:1/-1"><label>Camera zoom (0.5&times; lets you stand closer)</label><select id="binLens"><option value="">1.0&times;</option><option value="zoom:0.5">0.5&times;</option></select></div>
+    <div><label>Camera angle around the tree (&deg;)</label><input id="binAngle" type="number" value="0" step="5"></div>
+    <div><label>LED count</label><input id="binCount" type="number" value="250" min="1"></div>
+    <div style="grid-column:1/-1"><label>Colour check (the first all-on frame uses coloured LEDs; a number whose colour doesn't match is thrown out)</label><select id="binColor"><option value="off">Off</option><option value="rg">Red / green</option><option value="rgb">Red / green / blue</option></select></div>
+    <div><label>Aim preview (s, 0 = off)</label><input id="binPreview" type="number" value="4" min="0" max="30"></div>
+    <div><label>Min delta (lower = more sensitive)</label><input id="binDelta" type="number" value="10" min="4" max="120"></div>
+    <div><label>Settle (ms)</label><input id="binSettle" type="number" value="250" min="100"></div>
+    <div><label>Time limit (s)</label><input id="binMaxSec" type="number" value="150" min="30"></div>
+  </div>
+  <div style="font-size:11px;color:#888;line-height:1.5">
+    Aim the camera while the lights are blue, then keep the phone still (lean it on something) and dim the room.
+    For each scan, set the camera angle to where you are standing around the tree: 0&deg; for the first spot, then
+    +60, +120&hellip; going round the same way. Start the first scan of every strip from the same spot.
+    Settle: lower is faster, raise it if LEDs get missed.
+  </div>
+</main>
+
+<dialog id="connectDlg">
+  <h3 style="margin-top:0">Connect to H6870</h3>
+  <label>Name contains</label>
+  <input id="dlgName" type="text" value="6870">
+  <div style="font-size:12px;opacity:.7;margin:2px 0 6px">Two strips? Type the end of each name (e.g. 6778, then 8274) &mdash; the same name finds the same strip.</div>
+  <label>&hellip;or MAC address (overrides name)</label>
+  <input id="dlgAddress" type="text" list="recentMacs" placeholder="AA:BB:CC:DD:EE:FF" autocapitalize="characters">
+  <datalist id="recentMacs"></datalist>
+  <div class="row">
+    <button id="dlgCancel">Cancel</button>
+    <button id="dlgConnect" class="primary">Connect</button>
+  </div>
+</dialog>
+
+<script>
+const $ = id => document.getElementById(id);
+const WORLD = 2000;
+const MAX_STRIPS = 4;
+let connected = [];          // strips connected to the server: { device (its address), name (e.g. Govee_H6870_6778) }
+
+async function api(path, body) {
+  const opts = { method: body ? 'POST' : 'GET' };
+  if (body) {
+    opts.headers = { 'Content-Type': 'application/json' };
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(path, opts);
+  try { return await res.json(); }
+  catch (_) { return { ok: false, error: `the server answered ${res.status} for ${path}` + (res.status === 404 ? ' (is server.py an old version? replace it and restart the server)' : '') }; }
+}
+function setStatus(t, ok) {
+  $('status').textContent = t;
+  $('status').classList.toggle('connected', !!ok);
+  const n = connected.length;
+  $('btnConnect').textContent = n ? 'Add strip' : 'Connect';
+  $('btnConnect').classList.toggle('primary', !n);
+  $('btnConnect').hidden = n >= MAX_STRIPS;
+  $('btnDisconnect').hidden = !n;
+}
+const connLabel = () => connected.map(c => c.name || c.device).join(' + ');
+const showConnected = () => connected.length ? setStatus((connected.length > 1 ? connected.length + ' strips: ' : 'Connected: ') + connLabel(), true) : setStatus('Not connected', false);
+
+$('btnConnect').onclick = () => $('connectDlg').showModal();
+$('btnDisconnect').onclick = async () => {
+  setStatus('Disconnecting…', true);
+  for (const c of connected) { try { await api('/api/disconnect', { device: c.device }); } catch (_) {} }
+  connected = [];
+  setStatus('Not connected', false);
+};
+$('dlgCancel').onclick  = () => $('connectDlg').close();
+// Remember recently used MACs so the right strand is one tap away.
+function recentList() {
+  try { return JSON.parse(localStorage.getItem('govee.recent') || '[]'); } catch (_) { return []; }
+}
+function rememberAddr(a) {
+  if (!a) return;
+  try {
+    const l = [a, ...recentList().filter(x => x !== a)].slice(0, 6);
+    localStorage.setItem('govee.recent', JSON.stringify(l));
+  } catch (_) {}
+  fillRecent();
+}
+function fillRecent() {
+  $('recentMacs').innerHTML = recentList().map(a => `<option value="${a}">`).join('');
+  const last = recentList()[0];
+}
+fillRecent();
+
+$('dlgConnect').onclick = async () => {
+  setStatus('Connecting…');
+  const address = $('dlgAddress').value.trim() || null;
+  const r = await api('/api/connect', {
+    name:    $('dlgName').value.trim() || null,
+    address,
+  });
+  if (r.ok) {
+    if (!connected.some(c => c.device === r.device)) connected.push({ device: r.device, name: r.name || '' });
+    rememberAddr(r.device || address);
+    $('connectDlg').close();
+    showConnected();
+  } else { showConnected(); alert(r.error || 'Could not connect'); }
+};
+
+// If the page was reloaded while the server still holds a connection, pick it back up.
+(async () => {
+  try {
+    const r = await api('/api/info');
+    if (r.ok && r.connected) {
+      for (const k of Object.keys(r.connected)) if (r.connected[k] && /^[0-9A-F]{2}(:[0-9A-F]{2}){5}$/.test(k)) connected.push({ device: k, name: (r.names && r.names[k]) || '' });
+      if (!connected.length && r.last && r.connected[r.last]) connected.push({ device: r.last, name: (r.names && r.names[r.last]) || '' });
+      showConnected();
+    }
+    if (r.ok && !r.captures) $('binProgress').textContent = 'Warning: the server is an old version (it cannot save scans for /merge). Replace server.py with the new one and restart it.';
+  } catch (_) {}
+})();
+
+// ============================================================
+// Camera mapping (sequential + binary modes)
+// ============================================================
+let binStream = null;
+let binVideoEl = $('binVideo');
+let binOverlayEl = $('binOverlay');
+let binCanvas = document.createElement('canvas');
+let binCtx = binCanvas.getContext('2d', { willReadFrequently: true });
+let binAborted = false;
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const toGray   = i => i ^ (i >> 1);
+const fromGray = g => { let i = 0; while (g) { i ^= g; g >>= 1; } return i; };
+const lum = (d, i) => 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+
+// Size the preview box from the real frame size. Called after play, on every size change the video
+// reports, and on rotation, so a second activation can never keep a stale shape (the picture is also
+// object-fit: contain, so it is never stretched).
+function binLayout() {
+  const vw = binVideoEl.videoWidth, vh = binVideoEl.videoHeight;
+  if (!vw || !vh) return;
+  const box = $('binBox'), host = box.parentElement;
+  const avail = Math.max(120, (host.clientWidth || host.getBoundingClientRect().width || window.innerWidth - 40));
+  const maxH = Math.min(420, Math.round(window.innerHeight * 0.5));
+  const w = Math.round(Math.min(avail, maxH * vw / vh)), h = Math.round(w * vh / vw);
+  box.style.aspectRatio = 'auto';
+  box.style.width = w + 'px';
+  box.style.height = h + 'px';
+  if (binOverlayEl.width !== vw || binOverlayEl.height !== vh) { binOverlayEl.width = vw; binOverlayEl.height = vh; }
+}
+binVideoEl.addEventListener('loadedmetadata', binLayout);
+binVideoEl.addEventListener('resize', binLayout);
+addEventListener('resize', binLayout);
+addEventListener('orientationchange', () => setTimeout(binLayout, 300));
+
+const lensPref = () => { try { return localStorage.getItem('govee.lens') === 'zoom:0.5' ? 'zoom:0.5' : ''; } catch (_) { return ''; } };
+async function binStartCam() {
+  if (binStream) { binLayout(); return; }
+  const pref = lensPref();
+  $('binLens').value = pref;
+  binStream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false,
+  });
+  if (pref) {                                          // 0.5x = the widest zoom this camera offers
+    try {
+      const track = binStream.getVideoTracks()[0], z = track.getCapabilities && track.getCapabilities().zoom;
+      await track.applyConstraints({ advanced: [{ zoom: z ? Math.max(z.min, 0.5) : 0.5 }] });
+    } catch (_) {}
+  }
+  binVideoEl.srcObject = binStream;
+  await binVideoEl.play();
+  // iOS can report 0x0 or the previous stream's size right after play(); wait for a real frame.
+  if (binVideoEl.requestVideoFrameCallback) {
+    await new Promise(res => { const t = setTimeout(res, 800); binVideoEl.requestVideoFrameCallback(() => { clearTimeout(t); res(); }); });
+  }
+  const vw = binVideoEl.videoWidth, vh = binVideoEl.videoHeight;
+  const scale = Math.min(1, 640 / vw);
+  binCanvas.width  = Math.round(vw * scale);
+  binCanvas.height = Math.round(vh * scale);
+  binOverlayEl.width  = vw;
+  binOverlayEl.height = vh;
+  binLayout();
+}
+function binStopCam() {
+  if (binStream) binStream.getTracks().forEach(t => t.stop());
+  binStream = null;
+  binVideoEl.srcObject = null;
+  const box = $('binBox');                         // back to a neutral shape until the next stream reports its size
+  box.style.width = '100%'; box.style.height = ''; box.style.aspectRatio = '16 / 9';
+}
+function binSnapshot() {
+  binCtx.drawImage(binVideoEl, 0, 0, binCanvas.width, binCanvas.height);
+  return binCtx.getImageData(0, 0, binCanvas.width, binCanvas.height);
+}
+
+// ============================================================
+// Camera mapping engine (v2, built from real captures of the tree)
+//
+//   1. Dark frame, then all-on frame. Spots = bright DOTS (local contrast) in the all-on frame
+//      that are not already there in the dark frame (so curtain edges, ornaments and the
+//      ceiling light never count).
+//   2. 2*ceil(log2 N) code frames: for each bit, light the LEDs whose bit is 1, then the
+//      complement. Every real LED is bright in exactly one of the pair, so its bit is just
+//      "which frame has the dot". Static clutter looks the same in both and cancels.
+//   3. The phone drifts during a run (20+ px is normal when hand-held, with a little tilt/zoom).
+//      Every frame is registered to the all-on frame (large search range + similarity fit over a
+//      grid of tiles) and each spot is looked up where it has moved to.
+//   4. Strand continuity removes the odd wrong read; LEDs hidden behind the tree are
+//      interpolated along the strand (yellow).
+//
+// ~2*ceil(log2 N)+2 strip updates in total (18 for 250 LEDs).
+// ============================================================
+const LED_COLOR = 'a0a0a0';    // grey, not full white: avoids clipping the sensor
+const REG_RANGE = 16;          // registration: +-16 px at quarter resolution = +-64 px of drift
+const REG_CLIP  = 30;          // registration ignores contrast beyond this (LED dots themselves)
+const tm = { send: 0, ack: 0, n: 0, parts: 0, mtu: 0 };     // where the strip's time goes (from govee_strip.show)
+
+let _jc = null;
+
+function drawMarks(marks, spots = null) {
+  const W = binOverlayEl.width, H = binOverlayEl.height;
+  const octx = binOverlayEl.getContext('2d');
+  octx.clearRect(0, 0, W, H);
+  const rad = Math.max(4, W / 120);
+  if (spots) {
+    octx.fillStyle = 'rgba(0,200,255,.55)';
+    for (const s of spots) {
+      octx.beginPath(); octx.arc(s.x * W, s.y * H, Math.max(2, rad / 3), 0, Math.PI * 2); octx.fill();
+    }
+  }
+  for (const r of marks) {
+    if (r.x == null || r.y == null) continue;
+    const px = r.x * W, py = r.y * H;
+    const col = r.status === 'ok' ? '#00ff00'
+              : (r.status === 'interp' || r.status === 'extrap') ? '#ffd600'
+              : '#ff5252';
+    octx.strokeStyle = col;
+    octx.lineWidth = 2;
+    octx.beginPath(); octx.arc(px, py, rad, 0, Math.PI * 2); octx.stroke();
+  }
+}
+
+// ---------- frame capture ----------
+const nextFrame = () => new Promise(res => {
+  const hasRVFC = !!binVideoEl.requestVideoFrameCallback;
+  const t = setTimeout(res, hasRVFC ? 250 : 90);       // never hang if frames stop
+  if (hasRVFC) binVideoEl.requestVideoFrameCallback(() => { clearTimeout(t); res(); });
+});
+// Wait for two genuinely new video frames so we never read a stale one.
+async function freshSnapshot() {
+  await nextFrame(); await nextFrame();
+  return binSnapshot();
+}
+async function lightSet(device, idx, count, color = LED_COLOR) {
+  const r = await api('/api/set_mask', {
+    device, indices: idx, color, bg_color: '000000', total: count,
+  });
+  if (!r.ok) throw new Error('BLE: ' + (r.error || 'set_mask failed'));
+  if (r.timing) { tm.send += r.timing.send_ms; tm.ack += r.timing.ack_ms; tm.n++; tm.parts = r.timing.parts; tm.mtu = r.timing.mtu; }
+}
+async function lightGroups(device, groups, count) {
+  const r = await api('/api/set_mask', { device, groups, indices: [], color: '000000', bg_color: '000000', total: count });
+  if (!r.ok) throw new Error('BLE: ' + (r.error || 'set_mask failed'));
+  if (r.timing) { tm.send += r.timing.send_ms; tm.ack += r.timing.ack_ms; tm.n++; tm.parts = r.timing.parts; tm.mtu = r.timing.mtu; }
+}
+// Best effort: stop the camera re-exposing mid-run (not supported on every browser).
+async function lockExposure() {
+  try {
+    const track = binStream.getVideoTracks()[0];
+    await track.applyConstraints({ advanced: [{ exposureMode: 'manual', whiteBalanceMode: 'manual' }] });
+  } catch (_) { /* contrast measures cope without it */ }
+}
+const lumOf = img => {
+  const d = img.data, n = d.length >> 2, L = new Float32Array(n);
+  for (let i = 0, k = 0; i < n; i++, k += 4) L[i] = 0.299 * d[k] + 0.587 * d[k + 1] + 0.114 * d[k + 2];
+  return L;
+};
+async function grabLum(n = 1, label = 'frame') {
+  let acc = null;
+  for (let j = 0; j < n; j++) {
+    const img = await freshSnapshot();
+    const L = lumOf(img);
+    if (!acc) acc = L; else for (let i = 0; i < L.length; i++) acc[i] += L[i];
+  }
+  if (n > 1) for (let i = 0; i < acc.length; i++) acc[i] /= n;
+  return acc;
+}
+
+// ---------- image helpers ----------
+function integralOf(src, W, H) {
+  const iw = W + 1, I = new Float64Array(iw * (H + 1));
+  for (let y = 0; y < H; y++) {
+    let row = 0;
+    const o = (y + 1) * iw, p = y * iw;
+    for (let x = 0; x < W; x++) { row += src[y * W + x]; I[o + x + 1] = I[p + x + 1] + row; }
+  }
+  return I;
+}
+function boxFrom(I, W, H, r) {
+  const iw = W + 1, out = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) {
+    const y0 = Math.max(0, y - r), y1 = Math.min(H, y + r + 1);
+    for (let x = 0; x < W; x++) {
+      const x0 = Math.max(0, x - r), x1 = Math.min(W, x + r + 1);
+      out[y * W + x] = (I[y1 * iw + x1] - I[y0 * iw + x1] - I[y1 * iw + x0] + I[y0 * iw + x0]) /
+                       ((x1 - x0) * (y1 - y0));
+    }
+  }
+  return out;
+}
+// Local contrast: 3x3 mean minus 13x13 mean. A bright dot stands out; broad glow and exposure cancel.
+function contrastMap(L, W, H) {
+  const I = integralOf(L, W, H), a = boxFrom(I, W, H, 1), b = boxFrom(I, W, H, 6);
+  for (let i = 0; i < a.length; i++) a[i] -= b[i];
+  return a;
+}
+function peakNear(c, W, H, x, y, R = 3) {
+  const cx = Math.round(x), cy = Math.round(y);
+  let m = -1e9;
+  for (let yy = Math.max(0, cy - R); yy <= Math.min(H - 1, cy + R); yy++)
+    for (let xx = Math.max(0, cx - R); xx <= Math.min(W - 1, cx + R); xx++) {
+      const v = c[yy * W + xx]; if (v > m) m = v;
+    }
+  return m < -1e8 ? 0 : m;
+}
+
+// ---------- registration (phone drift) ----------
+function down4(a, W, H) {
+  const w = W >> 2, h = H >> 2, out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let s = 0;
+    for (let j = 0; j < 4; j++) { const o = (y * 4 + j) * W + x * 4; s += a[o] + a[o + 1] + a[o + 2] + a[o + 3]; }
+    out[y * w + x] = s / 16;
+  }
+  return out;
+}
+function prepRef(c, W, H) {
+  const cl = new Float32Array(c.length);
+  for (let i = 0; i < c.length; i++) cl[i] = c[i] > REG_CLIP ? REG_CLIP : c[i] < -REG_CLIP ? -REG_CLIP : c[i];
+  return { c: cl, q: down4(cl, W, H) };
+}
+function solve4(M, b) {
+  const n = 4, A = M.map((r, i) => [...r, b[i]]);
+  for (let i = 0; i < n; i++) {
+    let p = i;
+    for (let j = i + 1; j < n; j++) if (Math.abs(A[j][i]) > Math.abs(A[p][i])) p = j;
+    if (Math.abs(A[p][i]) < 1e-9) return null;
+    [A[i], A[p]] = [A[p], A[i]];
+    for (let j = i + 1; j < n; j++) { const f = A[j][i] / A[i][i]; for (let k = i; k <= n; k++) A[j][k] -= f * A[i][k]; }
+  }
+  const x = [0, 0, 0, 0];
+  for (let i = n - 1; i >= 0; i--) {
+    let s = A[i][n]; for (let k = i + 1; k < n; k++) s -= A[i][k] * x[k];
+    x[i] = s / A[i][i];
+  }
+  return x;
+}
+// Where does a feature at (x,y) in `ref` appear in `c`? Coarse global search (+-64 px), then a grid of
+// tiles refines it, and a similarity transform (shift + rotation + zoom) is fitted to the tile motions.
+function register(ref, c, W, H) {
+  const cur = prepRef(c, W, H);
+  const w = W >> 2, h = H >> 2, m = REG_RANGE + 1;
+  let best = Infinity, bx = 0, by = 0;
+  for (let dy = -REG_RANGE; dy <= REG_RANGE; dy++) {
+    for (let dx = -REG_RANGE; dx <= REG_RANGE; dx++) {
+      let sad = 0;
+      for (let y = m; y < h - m; y += 2) {
+        const ro = y * w, co = (y + dy) * w + dx;
+        for (let x = m; x < w - m; x += 2) sad += Math.abs(ref.q[ro + x] - cur.q[co + x]);
+      }
+      if (sad < best) { best = sad; bx = dx; by = dy; }
+    }
+  }
+  const t0x = bx * 4, t0y = by * 4;
+  const gx = 3, gy = 4, pts = [];
+  for (let j = 0; j < gy; j++) for (let i = 0; i < gx; i++) {
+    const x0 = Math.round((i + 0.15) * W / gx), x1 = Math.round((i + 0.85) * W / gx);
+    const y0 = Math.round((j + 0.15) * H / gy), y1 = Math.round((j + 0.85) * H / gy);
+    let tb = Infinity, tdx = t0x, tdy = t0y, tsum = 0, tn = 0;
+    for (let dy = t0y - 6; dy <= t0y + 6; dy++) {
+      for (let dx = t0x - 6; dx <= t0x + 6; dx++) {
+        let sad = 0, n = 0;
+        for (let y = y0; y < y1; y += 2) {
+          const yy = y + dy; if (yy < 0 || yy >= H) continue;
+          const ro = y * W, co = yy * W + dx;
+          for (let x = x0; x < x1; x += 2) {
+            const xx = x + dx; if (xx < 0 || xx >= W) continue;
+            sad += Math.abs(ref.c[ro + x] - cur.c[co + x]); n++;
+          }
+        }
+        if (n < 200) continue;
+        sad /= n; tsum += sad; tn++;
+        if (sad < tb) { tb = sad; tdx = dx; tdy = dy; }
+      }
+    }
+    if (tn && tb < 0.85 * (tsum / tn)) pts.push({ u: (x0 + x1) / 2 - W / 2, v: (y0 + y1) / 2 - H / 2, dx: tdx, dy: tdy });
+  }
+  const fit = P => {
+    const N = [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], r = [0, 0, 0, 0];
+    const add = (row, y) => { for (let a = 0; a < 4; a++) { r[a] += row[a] * y; for (let b = 0; b < 4; b++) N[a][b] += row[a] * row[b]; } };
+    for (const p of P) { add([1, 0, p.u, -p.v], p.dx); add([0, 1, p.v, p.u], p.dy); }
+    return solve4(N, r);
+  };
+  let P = pts, par = null;
+  for (let it = 0; it < 3 && P.length >= 4; it++) {
+    par = fit(P); if (!par) break;
+    const res = P.map(p => Math.hypot(p.dx - (par[0] + par[2] * p.u - par[3] * p.v), p.dy - (par[1] + par[3] * p.u + par[2] * p.v)));
+    const lim = Math.max(2.5, 2 * [...res].sort((a, b) => a - b)[res.length >> 1]);
+    const keep = P.filter((_, i) => res[i] <= lim);
+    if (keep.length === P.length || keep.length < 4) break;
+    P = keep;
+  }
+  if (!par) par = [t0x, t0y, 0, 0];
+  const [tx, ty, e, f] = par;
+  return {
+    tx, ty, e, f, tiles: P.length,
+    map: (x, y) => { const u = x - W / 2, v = y - H / 2; return [x + tx + e * u - f * v, y + ty + f * u + e * v]; },
+  };
+}
+
+// ---------- post-processing ----------
+function medianStep(results, W, H) {
+  const ok = results.filter(r => r.status === 'ok'), s = [];
+  for (let a = 1; a < ok.length; a++) {
+    const g = ok[a].index - ok[a - 1].index;
+    if (g <= 3) s.push(Math.hypot((ok[a].x - ok[a - 1].x) * W, (ok[a].y - ok[a - 1].y) * H) / g);
+  }
+  if (s.length < 3) return 10;
+  s.sort((a, b) => a - b);
+  return Math.max(3, s[s.length >> 1]);
+}
+// The strand is physically continuous: drop detections far from BOTH neighbours.
+function cleanResults(results, W, H) {
+  const dist = (a, b) => Math.hypot((a.x - b.x) * W, (a.y - b.y) * H);
+  let removed = 0;
+  for (let pass = 0; pass < 3; pass++) {
+    const good = results.filter(r => r.status === 'ok');
+    const steps = [];
+    for (let a = 1; a < good.length; a++) {
+      const gap = good[a].index - good[a - 1].index;
+      if (gap <= 3) steps.push(dist(good[a], good[a - 1]) / gap);
+    }
+    if (steps.length < 5) break;
+    steps.sort((a, b) => a - b);
+    const lim = Math.max(4 * steps[steps.length >> 1], 20);
+    const bad = [];
+    for (let a = 0; a < good.length; a++) {
+      const P = good[a - 1], N = good[a + 1], r = good[a];
+      const farP = P ? dist(P, r) / (r.index - P.index) > lim : true;
+      const farN = N ? dist(N, r) / (N.index - r.index) > lim : true;
+      if (farP && farN) bad.push(r);
+    }
+    if (!bad.length) break;
+    for (const r of bad) { r.status = 'outlier'; r.x = null; r.y = null; removed++; }
+  }
+  // leave-one-out: a point far from the line between its two neighbours is an outlier. A real strand
+  // zigzags by about one LED spacing, so the limit is sized from the measured spacing (3x), not in pixels.
+  for (let it = 0; it < 80; it++) {
+    const ok = results.filter(r => r.status === 'ok');
+    const sp = medianStep(results, W, H);
+    let worst = null, wr = 0;
+    for (let a = 1; a < ok.length - 1; a++) {
+      const P = ok[a - 1], Q = ok[a + 1], r = ok[a];
+      if (r.index - P.index > 10 || Q.index - r.index > 10) continue;
+      const t = (r.index - P.index) / (Q.index - P.index);
+      const ex = (P.x + (Q.x - P.x) * t) * W, ey = (P.y + (Q.y - P.y) * t) * H;
+      const res = Math.hypot(r.x * W - ex, r.y * H - ey);
+      const lim = Math.max(3 * sp, 0.9 * Math.hypot((Q.x - P.x) * W, (Q.y - P.y) * H));
+      if (res > lim && res / lim > wr) { wr = res / lim; worst = r; }
+    }
+    if (!worst) break;
+    worst.status = 'outlier'; worst.x = null; worst.y = null; removed++;
+  }
+  return removed;
+}
+// Linearly interpolate hidden / rejected LEDs (flagged 'interp' / 'extrap').
+function fillGaps(results) {
+  const goodIdx = results.filter(r => r.status === 'ok').map(r => r.index);
+  if (!goodIdx.length) return;
+  for (const r of results) {
+    if (r.status === 'ok') continue;
+    let a = -1, b = -1;
+    for (const g of goodIdx) { if (g < r.index) a = g; else if (g > r.index) { b = g; break; } }
+    if (a >= 0 && b >= 0) {
+      const A = results[a], B = results[b], t = (r.index - a) / (b - a);
+      r.x = A.x + (B.x - A.x) * t; r.y = A.y + (B.y - A.y) * t; r.status = 'interp';
+    } else {
+      const S = results[a >= 0 ? a : b];
+      r.x = S.x; r.y = S.y; r.status = 'extrap';
+    }
+  }
+}
+
+// ---------- the run ----------
+// ---------- colour check helpers ----------
+// With the check on, the first all-on frame lights LED i in colour i % P (red/green, or red/green/blue). A decoded
+// number whose colour disagrees with what the camera saw at that dot is a misread and is thrown away.
+const COLOR_HEX = ['b00000', '00b000', '0000c0'];
+const maxOf = img => {
+  const d = img.data, n = d.length >> 2, L = new Float32Array(n);
+  for (let i = 0, k = 0; i < n; i++, k += 4) L[i] = Math.max(d[k], d[k + 1], d[k + 2]);
+  return L;
+};
+async function grabFrame(chan) {
+  const img = await freshSnapshot();
+  return { L: chan === 'max' ? maxOf(img) : lumOf(img), d: img.data };
+}
+// which of the P colours the dot at (x, y) shows: 0..P-1, or -1 when it can't be told (washed out, mixed)
+function spotColor(on, dk, W, H, x, y, P) {
+  const xi = Math.round(x), yi = Math.round(y), px = [];
+  let peak = 0;
+  for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+    const X = xi + dx, Y = yi + dy; if (X < 0 || Y < 0 || X >= W || Y >= H) continue;
+    const k = (Y * W + X) * 4, r = Math.max(0, on[k] - dk[k]), g = Math.max(0, on[k + 1] - dk[k + 1]), b = Math.max(0, on[k + 2] - dk[k + 2]);
+    const m = Math.max(r, g, b); px.push([r, g, b, m]); if (m > peak) peak = m;
+  }
+  if (peak < 25) return -1;
+  let r = 0, g = 0, b = 0;
+  for (const p of px) if (p[3] >= 0.5 * peak) { r += p[0]; g += p[1]; b += p[2]; }
+  const ch = P === 3 ? [r, g, b] : [r, g];
+  const order = ch.map((v, i) => [v, i]).sort((a, c) => c[0] - a[0]);
+  return order[0][0] >= 1.5 * (order[1][0] + 1) ? order[0][1] : -1;
+}
+// dots that are in the all-on frame but not in the dark one
+function findSpots(cOn, cDark, regDark, W, H, thr, count) {
+  const spots = [], R = 3;
+  for (let y = R; y < H - R; y++) {
+    for (let x = R; x < W - R; x++) {
+      const v = cOn[y * W + x];
+      if (v < thr) continue;
+      let isMax = true;
+      for (let dy = -R; dy <= R && isMax; dy++) for (let dx = -R; dx <= R; dx++) {
+        if (!dx && !dy) continue;
+        const o = cOn[(y + dy) * W + x + dx];
+        if (o > v || (o === v && (dy < 0 || (dy === 0 && dx < 0)))) { isMax = false; break; }
+      }
+      if (!isMax) continue;
+      const [xd, yd] = regDark.map(x, y);
+      const base = Math.max(0, peakNear(cDark, W, H, xd, yd, 3));
+      const val = v - base;
+      if (val < thr) continue;
+      let sx = 0, sy = 0, sw = 0;
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+        const w = cOn[(y + dy) * W + x + dx] - 0.3 * v;
+        if (w > 0) { sx += (x + dx) * w; sy += (y + dy) * w; sw += w; }
+      }
+      spots.push({ x: sw ? sx / sw : x, y: sw ? sy / sw : y, v: val, base });
+    }
+  }
+  spots.sort((a, b) => b.v - a.v);
+  if (spots.length > count * 2) spots.length = count * 2;
+  return spots;
+}
+
+// devices: one or more connected strips. Every step of the pattern is shown on each strip in turn (the others dark),
+// so all strips are photographed from the same spot and come out in one common picture.
+async function mapRun(devices, count, settle, minDelta, mode, maxSec = 150, previewSec = 0, colorMode = 'off') {
+  binAborted = false;
+  tm.send = tm.ack = tm.n = 0;
+  const S = devices.length, P = colorMode === 'rgb' ? 3 : colorMode === 'rg' ? 2 : 0, chan = P ? 'max' : 'luma';
+  const setHud  = t => { $('binHud').textContent = t; };
+  const setProg = t => { $('binProgress').textContent = t; };
+  const W = binCanvas.width, H = binCanvas.height;
+  const allIdx = Array.from({ length: count }, (_, i) => i);
+  const lit = devices.map(() => false);
+  let updates = 0, bleMs = 0;
+  const lightStrip = async (s, idx, groups) => {         // strip s shows idx (or coloured groups); the others go dark
+    const t = Date.now();
+    await Promise.all(devices.map((d, t2) => {
+      if (t2 === s) { lit[t2] = true; return groups ? lightGroups(d, groups, count) : lightSet(d, idx, count); }
+      if (lit[t2]) { lit[t2] = false; return lightSet(d, [], count); }
+      return null;
+    }));
+    bleMs += Date.now() - t; updates++;
+  };
+  const dark = () => Promise.all(devices.map(d => lightSet(d, [], count).catch(() => {}))).then(() => lit.fill(false));
+  const t0 = Date.now();
+  const secs = () => (Date.now() - t0) / 1000;
+  const el = () => secs().toFixed(0);
+  const perUpd = () => updates ? Math.round(bleMs / updates) : 0;
+  const bail = async msg => { await dark(); throw new Error(msg); };
+  const tag = s => S > 1 ? ` · strip ${s + 1}/${S}` : '';
+
+  // Aim preview: every LED of every strip on in blue so the person can frame the tree, then off before the real run.
+  if (previewSec > 0) {
+    await Promise.all(devices.map(d => lightSet(d, allIdx, count, '0000ff')));
+    const tEnd = Date.now() + previewSec * 1000;
+    while (Date.now() < tEnd && !binAborted) {
+      setHud(`aim the camera… lights off in ${Math.ceil((tEnd - Date.now()) / 1000)} s`);
+      await sleep(200);
+    }
+    await dark();
+    if (binAborted) return null;
+    await sleep(500);                                   // let the camera's exposure settle on the dark scene
+  }
+  for (let c = (previewSec > 0 ? 2 : 3); c >= 1; c--) { setHud(`starting in ${c}…`); await sleep(700); }
+  if (binAborted) { await dark(); return null; }
+
+  // 1. dark frame, then one all-on frame per strip
+  setHud('Baseline'); setProg('Reading dark frame…');
+  await dark();
+  await sleep(700);
+  await lockExposure();
+  await sleep(250);
+  const darkF = await grabFrame(chan);
+  const cDark = contrastMap(darkF.L, W, H);
+
+  const per = [];
+  for (let s = 0; s < S; s++) {
+    setHud('All on' + tag(s)); setProg('Finding the LEDs the camera can see…');
+    const groups = P ? Array.from({ length: P }, (_, c) => ({ indices: allIdx.filter(i => i % P === c), color: COLOR_HEX[c] })) : null;
+    await lightStrip(s, allIdx, groups);
+    await sleep(Math.max(settle, 350));
+    const onF = await grabFrame(chan);
+    const cOn = contrastMap(onF.L, W, H);
+    per.push({ onF, cOn, ref: prepRef(cOn, W, H), A: [], B: [], shifts: [] });
+  }
+  const thr = Math.max(12, minDelta * 1.75);                  // default Min delta 20 -> 35
+  for (let s = 0; s < S; s++) {
+    const o = per[s], regDark = register(o.ref, cDark, W, H);
+    o.spots = findSpots(o.cOn, cDark, regDark, W, H, thr, count);
+    if (o.spots.length < 8) await bail(`Only ${o.spots.length} LEDs seen when all lit${tag(s)}. Aim at the lit tree, dim the room, or lower Min delta.`);
+    o.col = P ? o.spots.map(sp => spotColor(o.onF.d, darkF.d, W, H, sp.x, sp.y, P)) : null;
+    // every strip is mapped into the picture of strip 1 (the phone may have moved a few pixels between strips)
+    o.toFirst = s ? register(o.ref, per[0].cOn, W, H) : null;
+  }
+  drawMarks([], per.flatMap((o, s) => o.spots.map(sp => {
+    const [x, y] = o.toFirst ? o.toFirst.map(sp.x, sp.y) : [sp.x, sp.y]; return { x: x / W, y: y / H };
+  })));
+  setProg(per.map((o, s) => `${S > 1 ? 'Strip ' + (s + 1) + ': ' : ''}${o.spots.length} LEDs seen when all lit.`).join('\n'));
+
+  // 2. codes: each bit shown as a pattern and as its complement, strip after strip
+  const K = Math.max(1, Math.ceil(Math.log2(count)));
+  for (let k = 0; k < K; k++) {
+    if (binAborted) { await dark(); return null; }
+    if (secs() > maxSec) await bail('Time limit reached before all codes were read.');
+    for (const pol of [1, 0]) {
+      const idx = [];
+      for (let i = 0; i < count; i++) if (((toGray(i) >> k) & 1) === pol) idx.push(i);
+      for (let s = 0; s < S; s++) {
+        const o = per[s];
+        setHud(`code ${k + 1}/${K}` + tag(s));
+        setProg(`Reading codes ${k + 1}/${K}${tag(s)}  (${el()}s, ${perUpd()} ms/update)`);
+        await lightStrip(s, idx);
+        await sleep(settle);
+        const F = await grabFrame('luma');
+        const c = contrastMap(F.L, W, H);
+        const reg = register(o.ref, c, W, H);
+        o.shifts.push([+reg.tx.toFixed(1), +reg.ty.toFixed(1), reg.tiles]);
+        (pol ? o.A : o.B)[k] = o.spots.map(sp => { const [x, y] = reg.map(sp.x, sp.y); return Math.max(0, peakNear(c, W, H, x, y, 3)); });
+      }
+    }
+  }
+  await dark();
+
+  // 3. decode each strip: bit = which of the pair shows the dot; a clean read needs a clear winner every time
+  const out = [];
+  for (let s = 0; s < S; s++) {
+    const o = per[s], { spots, A, B } = o;
+    const results = Array.from({ length: count }, (_, i) => ({ index: i, x: null, y: null, status: 'missing', delta: 0, src: '' }));
+    const best = new Map();
+    let unclear = 0, colorBad = 0, colorOk = 0, colorUnknown = 0;
+    spots.forEach((sp, c) => {
+      let g = 0, minConf = 1, minHi = Infinity;
+      for (let k = 0; k < K; k++) {
+        const a = Math.max(0, A[k][c] - sp.base), b = Math.max(0, B[k][c] - sp.base), hi = Math.max(a, b), lo = Math.min(a, b);
+        if (a > b) g |= (1 << k);
+        minConf = Math.min(minConf, (hi - lo) / (hi + lo + 1e-6));
+        minHi = Math.min(minHi, hi);
+      }
+      const idx = fromGray(g);
+      if (minConf < 0.4 || minHi < Math.max(0.3 * sp.v, thr * 0.5) || idx >= count) { unclear++; return; }
+      if (P) {
+        const want = idx % P, got = o.col[c];
+        if (got < 0) colorUnknown++;
+        else if (got !== want) { colorBad++; unclear++; return; }       // the number says one colour, the camera saw another
+        else colorOk++;
+      }
+      const score = minConf * minHi, p = best.get(idx);
+      if (!p || score > p.score) best.set(idx, { score, s: sp });
+    });
+    for (const [idx, d] of best) Object.assign(results[idx], { x: d.s.x / W, y: d.s.y / H, status: 'ok', delta: Math.round(d.s.v), src: 'code' });
+    const dupes = spots.length - unclear - best.size;
+    const rejected = cleanResults(results, W, H);
+    const seen = results.filter(r => r.status === 'ok').length;
+    if (seen < 5) await bail(`Could not read the codes${tag(s)} (${spots.length} spots, ${unclear} unclear). Hold the phone steadier and dim the room.`);
+    fillGaps(results);
+    if (o.toFirst) for (const r of results) if (r.x != null) { const [x, y] = o.toFirst.map(r.x * W, r.y * H); r.x = x / W; r.y = y / H; }
+    const cnt = st => results.filter(r => r.status === st).length;
+    const drift = Math.round(Math.max(...o.shifts.map(sh => Math.hypot(sh[0], sh[1]))));
+    results.stats = {
+      seconds: Math.round(secs()), updates, msPerUpdate: perUpd(), spots: spots.length, seen, unclear, dupes, rejected, drift,
+      sendMs: tm.n ? Math.round(tm.send / tm.n) : null, ackMs: tm.n ? Math.round(tm.ack / tm.n) : null, parts: tm.parts, mtu: tm.mtu,
+      colorMode, colorChecked: colorOk, colorRejected: colorBad, colorUnknown,
+      shiftToFirst: o.toFirst ? [+o.toFirst.tx.toFixed(1), +o.toFirst.ty.toFixed(1), o.toFirst.tiles] : null,
+    };
+    results.summary =
+      `${S > 1 ? 'Strip ' + (s + 1) + ': ' : ''}seen directly ${cnt('ok')} / ${count}, estimated ${cnt('interp') + cnt('extrap')} (yellow), ` +
+      `dropped ${unclear} unclear, ${dupes} duplicates, ${rejected} outliers, drift up to ${drift} px` +
+      (P ? `\n    colour check: ${colorOk} agreed, ${colorBad} wrong number thrown out, ${colorUnknown} dots too washed out to tell` : '');
+    out.push(results);
+  }
+  setHud('done');
+  out.report = `Done in ${el()}s: ${updates} strip updates, ${perUpd()} ms each.\n` + out.map(r => r.summary).join('\n') +
+    (tm.n ? `\nPer update: ${Math.round(tm.send / tm.n)} ms sending (${tm.parts} part${tm.parts > 1 ? 's' : ''}, ${tm.mtu} B), ` +
+            `${Math.round(tm.ack / tm.n)} ms waiting for the light's reply.` : '');
+  setProg(`Done in ${el()}s.`);
+  drawMarks(out.flat().filter(r => r.status === 'ok'), null);   // the LEDs that were read stay on the live picture (not the estimated ones): line the next scan up with them
+  return out;
+}
+
+// ---------- Wire up ----------
+$('binLens').onchange = async () => {
+  try { localStorage.setItem('govee.lens', $('binLens').value); } catch (_) {}
+  binStopCam();
+  try { await binStartCam(); $('binHud').textContent = 'ready'; } catch (e) { $('binHud').textContent = 'camera unavailable: ' + e.message; }
+};
+try { const c = localStorage.getItem('govee.colour'); if (c) $('binColor').value = c; } catch (_) {}
+$('binStop').onclick = () => { binAborted = true; $('binStop').disabled = true; };
+
+// Keep the live camera on so the person can aim before pressing Scan.
+async function ensureCamera() {
+  try { await binStartCam(); $('binHud').textContent = 'ready'; }
+  catch (e) { $('binHud').textContent = 'camera unavailable: ' + e.message; throw e; }
+}
+addEventListener('load', () => { ensureCamera().catch(() => {}); });
+
+$('binStart').onclick = async () => {
+  $('binStart').disabled = true;
+  $('binStop').disabled = false;
+  $('binProgress').textContent = '';
+  try {
+    if (!connected.length) throw new Error('Connect to a strip first (Connect button, top right).');
+    await ensureCamera();
+    await sleep(300);
+    const mode   = 'auto';
+    const count  = parseInt($('binCount').value)  || 250;
+    const settle = parseInt($('binSettle').value) || 250;
+    const delta  = parseInt($('binDelta').value)  || 20;
+    const angle  = parseFloat($('binAngle').value) || 0;
+    const maxSec = parseInt($('binMaxSec').value) || 150;
+    const previewSec = Math.max(0, parseFloat($('binPreview').value) || 0);
+
+    const colorMode = $('binColor').value;
+    try { localStorage.setItem('govee.colour', colorMode); } catch (_) {}
+    const devs = connected.map(c => c.device);
+    const runs = await mapRun(devs, count, settle, delta, mode, maxSec, previewSec, colorMode);
+    if (!runs) { $('binProgress').textContent = 'Stopped.'; $('binHud').textContent = 'ready'; return; }
+
+    const shape = 'camera-' + mode;
+    const stripOf = (c, res) => ({
+      device: c.device, strip: c.device, stripName: c.name,
+      results: res.map(r => ({ index: r.index, x: r.x, y: r.y, status: r.status, delta: r.delta ?? null, src: r.src || null })),
+      stats: res.stats || null,
+    });
+    const trk = binStream && binStream.getVideoTracks()[0], ts = trk && trk.getSettings ? trk.getSettings() : {};
+    const common = { shape, mode, time: Date.now(), count, angle, aspect: binCanvas.width / binCanvas.height };   // x,y are fractions of the frame
+    const debug = {                                           // everything needed to see how the scan went, kept out of the screen
+      report: runs.report,
+      settings: { settleMs: settle, minDelta: delta, maxSec, previewSec, colorMode, zoom: $('binLens').value || '1.0x' },
+      camera: { videoW: binVideoEl.videoWidth, videoH: binVideoEl.videoHeight, analysisW: binCanvas.width, analysisH: binCanvas.height, track: ts },
+      page: navigator.userAgent,
+    };
+    const payload = connected.length === 1
+      ? { version: 4, ...common, ...stripOf(connected[0], runs[0]), debug }                 // one strip: the single-strip file
+      : { version: 5, ...common, strips: connected.map((c, i) => stripOf(c, runs[i])), debug };   // several strips from the same camera spot
+    const name = mode + '-' + Math.round(angle) + 'deg-' + Date.now();
+
+    // Send the capture to the server (it shows up on /merge).
+    let r;
+    try { r = await api('/api/captures', { ...payload, name }); } catch (e) { r = { ok: false, error: e.message }; }
+    const lines = runs.map((res, i) => `${connected.length > 1 ? 'Strip ' + (i + 1) + ': ' : ''}${res.stats.seen} of ${count} LEDs read directly`);
+    $('binProgress').textContent = (r && r.ok)
+      ? `${lines.join('\n')}\nSaved. Aim at the marks to repeat the same spot, or move on to the next angle.`
+      : `${lines.join('\n')}\nNOT saved: ${(r && r.error) || 'unknown error'}.`;
+  } catch (e) {
+    $('binProgress').textContent = 'Error: ' + e.message;
+  } finally {
+    $('binStart').disabled = false;
+    $('binStop').disabled = true;
+  }
+};
+
+setStatus('Not connected', false);
+</script>
+</body>
+</html>

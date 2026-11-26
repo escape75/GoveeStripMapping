@@ -1,0 +1,628 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tree 3D merge</title>
+<style>
+:root{--bg:#0f1318;--panel:#171d25;--line:#2a3340;--tx:#e6ebf2;--mu:#8b97a8;--ac:#4cc38a;--warn:#e8b04a}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.45 system-ui,sans-serif}
+main{max-width:1000px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:0 0 4px}h2{font-size:15px;margin:0}p.sub{color:var(--mu);margin:0 0 14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px}
+button,select,input{font:inherit;color:var(--tx);background:#222a35;border:1px solid var(--line);border-radius:7px;padding:7px 10px}
+button{cursor:pointer}button.primary{background:var(--ac);color:#06210f;border-color:var(--ac);font-weight:600}
+button:disabled{opacity:.45;cursor:default}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.grow{flex:1}
+.f{display:flex;gap:10px;align-items:center;padding:7px 0;border-top:1px solid var(--line)}
+.f:first-child{border-top:0}.f .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.m{color:var(--mu);font-size:13px}input.ang{width:78px}
+.views{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:700px){.views{grid-template-columns:1fr}}
+canvas{width:100%;aspect-ratio:1/1.1;background:#0b0f14;border-radius:8px;display:block;touch-action:none}
+.cap{color:var(--mu);font-size:13px;margin-top:6px}
+#msg{white-space:pre-wrap}.err{color:#ff8a8a}
+.sw{display:inline-block;width:12px;height:12px;border-radius:50%;margin-right:6px;vertical-align:-1px}
+.adj{display:grid;grid-template-columns:110px 1fr 56px;gap:4px 10px;align-items:center;margin-top:8px;font-size:14px}
+.adj input[type=range]{padding:0;width:100%}.adj span.v{color:var(--mu);font-variant-numeric:tabular-nums;text-align:right}
+</style></head><body><main>
+<h1>Tree 3D merge</h1>
+<p class="sub">Scans are grouped by light strip. Strips scanned together on the phone come out already lined up; strips scanned one at a time are shown together so you can line them up by hand.</p>
+
+<div class="card">
+  <div class="row"><b class="grow">Captures on the server</b><button id="refresh">Refresh</button></div>
+  <div id="srv"></div>
+  <div class="row" style="margin-top:8px"><button id="addsrv" disabled>Add selected</button><button id="addall" disabled>Add all</button></div>
+  <div class="row" style="margin-top:10px"><span class="m grow">Or load JSON files from this device:</span><input id="pick" type="file" accept=".json,application/json" multiple></div>
+  <div class="cap">Captures are grouped by the strip they were taken on (the <code>device</code> saved in each file).</div>
+</div>
+
+<div class="card" id="strips" hidden>
+  <div class="row"><b class="grow">Strands</b><button id="clear">Clear all</button></div>
+  <div id="groups"></div>
+  <div class="row" style="margin-top:10px">
+    <button class="primary" id="go">Merge</button>
+  </div>
+  <div class="cap">Angles are where the phone stood around the tree, as set on the scan page. Use the same 0° spot for every strip and the strips come out already turned the right way; otherwise fix it with the Rotation slider after merging. Rough values are fine, the merge corrects them from the LEDs two views share.</div>
+</div>
+
+<div class="card" id="outcard" hidden>
+  <div id="msg"></div>
+  <div class="views" style="margin-top:10px">
+    <div><canvas id="c3"></canvas><div class="cap">Drag to rotate · solid = seen · dashed = filled in along the strand</div></div>
+    <div><canvas id="ct"></canvas><div class="cap">Top view · 0° camera is at the bottom</div></div>
+  </div>
+  <div id="adjust"></div>
+  <div class="row" style="margin-top:10px">
+    <label><input type="checkbox" id="wire" checked> wire</label>
+    <label>thickness <input type="range" id="wt" min="1" max="8" step="0.5" value="3" style="width:110px;padding:0"></label>
+    <span class="grow"></span>
+    <button id="dlj">Download JSON</button><button id="dlc">Download CSV</button>
+  </div>
+</div>
+</main>
+<script>
+// ============================================================
+// Multi-view merge: LED indices + a few camera angles -> 3D positions
+//
+// Model: the tree is a cone with a vertical axis; the strand is a spiral on it. LED n and n+1 are
+// neighbours on the wire and a fixed distance apart, which is what pins down the hidden stretches.
+//
+// For a camera at azimuth theta (counter-clockwise seen from above) an LED at azimuth phi, radius rho
+// shows up at   u = rho * sin(phi - theta)   to the right of the tree axis, and is on the near side
+// when cos(phi - theta) > 0.
+//   1. Per view: find the axis position and the half-width of the tree at each height from the LED
+//      extremes, so q = (x - axis) / halfwidth = sin(phi - theta), whatever the zoom or distance.
+//   2. Put all views on one vertical scale (the strand climbs with the index, and shared LEDs refine it).
+//   3. Per LED: phi from every view that saw it (near side by default; far side if the views only
+//      agree that way), circular mean.
+//   4. LEDs nobody saw: walk the spiral between the known neighbours. The number of extra turns is
+//      chosen so the length of wire matches (index gap) x (LED spacing).
+// Output axes: X right and Z towards the camera of the 0 degree view, Y up (all in the first view's
+// units, height-normalised pixels; scale it with the tree height if you want real units).
+// ============================================================
+const TAU = Math.PI * 2;
+const wrapPi = a => { a = (a + Math.PI) % TAU; if (a < 0) a += TAU; return a - Math.PI; };
+const wrap2 = a => { a %= TAU; return a < 0 ? a + TAU : a; };
+const med = arr => { if (!arr.length) return NaN; const s = [...arr].sort((a, b) => a - b); return s[s.length >> 1]; };
+
+function solveN(M, b) {
+  const n = b.length, A = M.map((r, i) => [...r, b[i]]);
+  for (let i = 0; i < n; i++) {
+    let p = i;
+    for (let j = i + 1; j < n; j++) if (Math.abs(A[j][i]) > Math.abs(A[p][i])) p = j;
+    if (Math.abs(A[p][i]) < 1e-12) return null;
+    [A[i], A[p]] = [A[p], A[i]];
+    for (let j = i + 1; j < n; j++) { const f = A[j][i] / A[i][i]; for (let k = i; k <= n; k++) A[j][k] -= f * A[i][k]; }
+  }
+  const x = new Array(n).fill(0);
+  for (let i = n - 1; i >= 0; i--) { let s = A[i][n]; for (let k = i + 1; k < n; k++) s -= A[i][k] * x[k]; x[i] = s / A[i][i]; }
+  return x;
+}
+function linfit(xs, ys) {                      // y = a + b x
+  const n = xs.length; if (n < 2) return null;
+  let sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (let i = 0; i < n; i++) { sx += xs[i]; sy += ys[i]; sxx += xs[i] * xs[i]; sxy += xs[i] * ys[i]; }
+  const d = n * sxx - sx * sx; if (Math.abs(d) < 1e-12) return null;
+  const b = (n * sxy - sx * sy) / d; return { a: (sy - b * sx) / n, b };
+}
+function robustLinfit(xs, ys) {
+  let X = xs, Y = ys, f = linfit(X, Y);
+  for (let it = 0; it < 3 && f && X.length > 6; it++) {
+    const r = X.map((x, i) => Math.abs(Y[i] - (f.a + f.b * x))), lim = Math.max(1e-9, 2.5 * med(r));
+    const kx = [], ky = [];
+    X.forEach((x, i) => { if (r[i] <= lim) { kx.push(x); ky.push(Y[i]); } });
+    if (kx.length < 5) break;
+    X = kx; Y = ky; f = linfit(X, Y);
+  }
+  return f;
+}
+
+// --- 1. one view: axis position, half-width profile, q per LED ---
+function prepView(v, shared) {
+  const aspect = v.aspect || 9 / 16, pts = [];
+  for (const r of v.results) if (r.status === 'ok' && r.x != null) pts.push({ i: r.index, X: r.x * aspect, y: r.y, dl: r.delta || 0 });
+  if (pts.length < (shared ? 3 : 8)) throw new Error(`View at ${v.angle} deg has only ${pts.length} LEDs read directly; need at least 8.`);
+  // Outline: |x - axis| <= half(y) = (a + b*y). Pooled over the whole view (one turn of the strand can hold
+  // 70 LEDs at the bottom, so narrow height bands never reach the true edge). Fit the P-quantile line of
+  // |x - axis| against y by pinball loss, searching the axis position and slope on a grid; for phases
+  // uniform around the tree |sin| has P-quantile sin(P*pi/2), which scales the line up to the real edge.
+  const P_Q = 0.92, corr = Math.sin(P_Q * Math.PI / 2);
+  const xsAll = pts.map(p => p.X).sort((u, w) => u - w), x0 = xsAll[xsAll.length >> 1], spread = xsAll[xsAll.length - 1] - xsAll[0];
+  const ysAll = pts.map(p => p.y), yMid = ysAll.reduce((s, y) => s + y, 0) / ysAll.length;
+  let best = null;
+  if (!shared) for (let ci = -20; ci <= 20; ci++) {
+    const cxT = x0 + ci * spread * 0.006;
+    const u = pts.map(p => Math.abs(p.X - cxT));
+    for (let bi = -10; bi <= 90; bi++) {
+      const slope = bi * 0.01 * spread / Math.max(1e-9, Math.max(...ysAll) - Math.min(...ysAll));   // half-width grows downward (y is down)
+      const r = u.map((uu, i) => uu - slope * (ysAll[i] - yMid)).sort((m, n) => m - n);
+      const aT = r[Math.min(r.length - 1, Math.floor(P_Q * r.length))];
+      let loss = 0;
+      for (let i = 0; i < u.length; i++) { const e = u[i] - slope * (ysAll[i] - yMid) - aT; loss += e >= 0 ? P_Q * e : (P_Q - 1) * e; }
+      if (!best || loss < best.loss) best = { loss, cx: cxT, slope, a: aT };
+    }
+  }
+  const cx = shared ? shared.cx : best.cx, half = shared ? shared.half : (y => Math.max(0.03, (best.a + best.slope * (y - yMid)) / corr));
+  for (const p of pts) p.q = Math.max(-1, Math.min(1, (p.X - cx) / half(p.y)));
+  const fy = linfit(pts.map(p => p.i), pts.map(p => p.y));          // height vs index (strand climbs with the index)
+  return { theta: (v.angle || 0) * Math.PI / 180, pts, cx, half, fy, aspect, name: v.name };
+}
+
+// --- 3+. one strand from aligned views (angles, vertical alignment and outline already settled) ---
+function solveStrand(P, rhoAt, count, opts) {
+  // 3. phi per LED from all views that saw it
+  const led = Array.from({ length: count }, (_, i) => ({ index: i, obs: [] }));
+  for (const v of P) for (const p of v.pts) if (p.i < count) led[p.i].obs.push({ th: v.theta, q: p.q, Y: v.al + v.be * p.y, dl: p.dl });
+  let nMulti = 0, nSingle = 0, resid = [];
+  for (const L of led) {
+    if (!L.obs.length) { L.known = false; continue; }
+    L.known = true; L.Y = L.obs.reduce((s, o) => s + o.Y, 0) / L.obs.length;
+    const n = L.obs.length; let bestC = Infinity, bestPhi = 0, bestR = 0; const alts = [];
+    for (let mask = 0; mask < (1 << n); mask++) {
+      let sx = 0, sy = 0, backs = 0;
+      L.obs.forEach((o, j) => {
+        const back = (mask >> j) & 1, ph = o.th + (back ? Math.PI - Math.asin(o.q) : Math.asin(o.q));
+        sx += Math.cos(ph); sy += Math.sin(ph); backs += back;
+      });
+      const R = Math.hypot(sx, sy) / n, c = (1 - R) + 0.12 * backs, ph = Math.atan2(sy, sx);
+      alts.push({ c, ph });
+      if (c < bestC) { bestC = c; bestPhi = ph; bestR = R; }
+    }
+    // near-tied alternatives (an LED seen edge-on from opposite views, say) are left to the continuity pass below
+    L.alt = [];
+    alts.sort((a, b) => a.c - b.c);
+    for (const a of alts) if (a.c - bestC <= 0.25 && Math.abs(wrapPi(a.ph - bestPhi)) > 0.4 && L.alt.every(b => Math.abs(wrapPi(a.ph - b.ph)) > 0.4)) L.alt.push({ ph: a.ph, pen: (a.c - bestC) * 4 });
+    L.phi = bestPhi; L.conf = n > 1 ? 'multi' : 'single';
+    if (n > 1 && L.alt.length) { L.cand = [bestPhi, ...L.alt.map(a => a.ph)]; L.candPen = [0, ...L.alt.map(a => a.pen)]; }
+    if (n === 1) { const o = L.obs[0], f = o.th + Math.asin(o.q), bk = o.th + Math.PI - Math.asin(o.q); L.cand = [f, bk]; L.candPen = [0, 0.8]; }
+    if (n > 1) { nMulti++; resid.push(Math.sqrt(Math.max(0, -2 * Math.log(Math.max(1e-6, bestR)))) * 180 / Math.PI); } else nSingle++;
+  }
+  let known = led.filter(l => l.known);
+  if (known.length < 6) throw new Error('Too few LEDs in total to build a model.');
+  for (const L of known) L.rho = rhoAt(L.Y);
+  const xyz = (rho, phi, Y) => [rho * Math.sin(phi), Y, rho * Math.cos(phi)];
+
+  // 4. spiral: winding direction and LED spacing from neighbours, then walk the hidden stretches
+  const measure = () => {
+    const steps = [], chords = [];
+    for (let a = 1; a < known.length; a++) {
+      const A = known[a - 1], B = known[a], g = B.index - A.index;
+      if (g <= 3) {
+        steps.push(wrapPi(B.phi - A.phi) / g);
+        const p = xyz(A.rho, A.phi, A.Y), q = xyz(B.rho, B.phi, B.Y);
+        chords.push(Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]) / g);
+      }
+    }
+    return { wind: med(steps) >= 0 ? 1 : -1, d: chords.length ? med(chords) : 0.05 };
+  };
+  let { wind, d } = measure();
+  const arc = (p0, p1, Y0, Y1, dphi) => {                  // length of a spiral piece
+    let s = 0, prev = xyz(rhoAt(Y0), 0, Y0); const m = Math.max(24, Math.ceil(Math.abs(dphi) / 0.1));
+    for (let k = 1; k <= m; k++) {
+      const t = k / m, Y = Y0 + (Y1 - Y0) * t, cur = xyz(rhoAt(Y), dphi * t, Y);
+      s += Math.hypot(cur[0] - prev[0], cur[1] - prev[1], cur[2] - prev[2]); prev = cur;
+    }
+    return s;
+  };
+  // Angle the wire must sweep to cover n LEDs between heights Y0 and Y1 (arc length = n * d), found by bisection.
+  const sweep = (Y0, Y1, n) => {
+    const want = n * d; let lo = 0, hi = 60;
+    if (arc(0, 0, Y0, Y1, 0) >= want) return 0;
+    for (let it = 0; it < 30; it++) { const m = (lo + hi) / 2; if (arc(0, 0, Y0, Y1, m) < want) lo = m; else hi = m; }
+    return (lo + hi) / 2;
+  };
+  // A LED seen by one view only can be on the near side or (seen through the branches) the far side.
+  // Pick the combination that makes the wire advance smoothly (Viterbi over the known LEDs).
+  const viterbi = () => {
+    const nK = known.length, cand = known.map(L => L.cand ? L.cand : [L.phi]);
+    const cost = Array.from({ length: nK }, (_, i) => cand[i].map(() => Infinity)), from = Array.from({ length: nK }, (_, i) => cand[i].map(() => 0));
+    cand[0].forEach((_, c) => { cost[0][c] = known[0].candPen ? known[0].candPen[c] : 0; });
+    for (let i = 1; i < nK; i++) {
+      const A = known[i - 1], B = known[i], g = B.index - A.index;
+      const want = wind * sweep(A.Y, B.Y, g), sig = 0.3 + 0.04 * Math.abs(want);
+      cand[i].forEach((ph, c) => {
+        const prior = known[i].candPen ? known[i].candPen[c] : 0;      // far side is the exception
+        cand[i - 1].forEach((pp, c0) => {
+          let t = 0;
+          { const e = wrapPi((ph - pp) - want); t = Math.min(8, (e / sig) ** 2); }
+          const tot = cost[i - 1][c0] + t + prior;
+          if (tot < cost[i][c]) { cost[i][c] = tot; from[i][c] = c0; }
+        });
+      });
+    }
+    let cc = cost[nK - 1].indexOf(Math.min(...cost[nK - 1])), flips = 0;
+    for (let i = nK - 1; i >= 0; i--) { if (known[i].cand) { if (cc && known[i].conf === 'single') flips++; known[i].phi = cand[i][cc]; } cc = from[i][cc]; }
+    return flips;
+  };
+  let nFlip = viterbi();
+  ({ wind, d } = measure());
+
+  // Physical check: the wire can't stretch, so two LEDs g steps apart can't be further apart than g * spacing.
+  // A known LED that breaks that with two or more of its neighbours is a mis-read position (a wrong decode or
+  // a false spot in one view): throw it out and let the model re-estimate it, instead of dragging the
+  // hidden stretches and the ends of the strand towards it.
+  let nRejected = 0;
+  for (let round = 0; round < 3; round++) {
+    let removedNow = 0;
+    for (let guard = 0; guard < 80; guard++) {
+      const viol = known.map(() => 0), pos = known.map(L => xyz(L.rho, L.phi, L.Y));
+      for (let i = 0; i < known.length; i++) for (let j = i + 1; j <= i + 5 && j < known.length; j++) {
+        const g = known[j].index - known[i].index; if (g > 30) continue;
+        const c = Math.hypot(pos[i][0] - pos[j][0], pos[i][1] - pos[j][1], pos[i][2] - pos[j][2]);
+        if (c > g * d * 1.35 + 0.6 * d) { viol[i]++; viol[j]++; }
+        else if (g <= 12 && opts.forwardOnly !== false) {              // the wire never turns back: j must lie ahead of i along the winding
+          const w = sweep(known[i].Y, known[j].Y, g), e = wrapPi(wind * (known[j].phi - known[i].phi) - w);
+          if (w + e < -0.5) { viol[i]++; viol[j]++; }
+        }
+      }
+      let worst = -1, wv = 1; viol.forEach((v, i) => { if (v > wv) { wv = v; worst = i; } });
+      if (worst < 0) {
+        // One pair left that cannot be real: no photo can show two neighbours further apart than the wire is long,
+        // and the real spacing is the long end of what neighbours show (the wire is often slack, so the median is
+        // too short). Drop the less certain of the two: fewer cameras first, then the weaker read.
+        const adj = []; for (let i = 1; i < known.length; i++) if (known[i].index - known[i - 1].index === 1) {
+          const a = pos[i - 1], b = pos[i]; adj.push(Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])); }
+        adj.sort((x, y) => x - y);
+        const dTrue = adj.length >= 12 ? adj[Math.floor(adj.length * 0.9)] : d * 1.6, hard = 1.15 * dTrue + 0.25 * d;
+        let wp = null;
+        for (let i = 0; i < known.length - 1; i++) { const g = known[i + 1].index - known[i].index; if (g > 3) continue;
+          const c = Math.hypot(pos[i][0] - pos[i + 1][0], pos[i][1] - pos[i + 1][1], pos[i][2] - pos[i + 1][2]);
+          if (c > g * hard && (!wp || c / (g * hard) > wp.r)) wp = { i, r: c / (g * hard) }; }
+        if (!wp) break;
+        const score = L => L.obs.length * 1000 + Math.min(...L.obs.map(o => o.dl || 0));
+        worst = score(known[wp.i]) <= score(known[wp.i + 1]) ? wp.i : wp.i + 1;
+      }
+      known[worst].known = false; known.splice(worst, 1); removedNow++;
+    }
+    if (!removedNow) break;
+    nRejected += removedNow;
+    if (known.length < 6) throw new Error('Too many inconsistent LEDs; the captures may not be of the same tree or the angles are far off.');
+    nFlip = viterbi();
+    ({ wind, d } = measure());
+  }
+
+  // Forward-only rule, small deviations: the angle along the wire (unwrapped, in the winding direction) can only grow.
+  // Where noise makes it dip, pool the neighbours involved (isotonic regression, weighted by how many cameras saw them).
+  let nPooled = 0;
+  if (opts.forwardOnly !== false && known.length > 2) {
+    const sv = [0];
+    for (let a = 1; a < known.length; a++) {
+      const A = known[a - 1], B = known[a], g = B.index - A.index, w = sweep(A.Y, B.Y, g);
+      sv.push(sv[a - 1] + w + wrapPi(wind * (B.phi - A.phi) - w));
+    }
+    const blocks = [];
+    sv.forEach((v, a) => {
+      blocks.push({ sum: v * known[a].obs.length, w: known[a].obs.length, from: a, to: a });
+      while (blocks.length > 1) {
+        const q = blocks[blocks.length - 1], p = blocks[blocks.length - 2];
+        if (p.sum / p.w <= q.sum / q.w) break;
+        blocks.splice(blocks.length - 2, 2, { sum: p.sum + q.sum, w: p.w + q.w, from: p.from, to: q.to });
+      }
+    });
+    for (const b of blocks) {
+      if (b.to === b.from) continue;
+      const m = b.sum / b.w;
+      for (let a = b.from; a <= b.to; a++) { known[a].phi += wind * (m - sv[a]); nPooled++; }
+    }
+  }
+
+  let turnsTotal = 0, filled = 0;
+  for (let a = 1; a < known.length; a++) {
+    const A = known[a - 1], B = known[a], n = B.index - A.index;
+    if (n < 2) { turnsTotal += wrapPi(B.phi - A.phi) * wind > 0 ? Math.abs(wrapPi(B.phi - A.phi)) / TAU : 0; continue; }
+    let base = wrap2((B.phi - A.phi) * wind);                // 0..2pi in the winding direction
+    if (base > TAU - 0.05) base = 0;                         // equal angles can come out as -1e-16 = almost a full turn; the loop below adds real turns
+    let best = null;
+    for (let k = 0; k <= 5; k++) {
+      const dphi = wind * (base + TAU * k), err = Math.abs(arc(0, 0, A.Y, B.Y, dphi) - n * d);
+      if (!best || err < best.err) best = { err, dphi };
+    }
+    turnsTotal += Math.abs(best.dphi) / TAU;
+    for (let m = A.index + 1; m < B.index; m++) {
+      const t = (m - A.index) / n, Y = A.Y + (B.Y - A.Y) * t;
+      Object.assign(led[m], { phi: A.phi + best.dphi * t, Y, rho: rhoAt(Y), conf: 'spiral' }); filled++;
+    }
+  }
+  // beyond the first / last known LED: carry on at the local rate
+  const rate = (arr, flip) => {
+    const s = flip ? arr.slice(-8) : arr.slice(0, 8); if (s.length < 3) return { dp: wind * 0.15, dy: 0 };
+    const A = s[0], B = s[s.length - 1], span = B.index - A.index;
+    return { dp: wind * Math.abs(wrapPi((B.phi - A.phi) / Math.max(1, span))) * (span > 0 ? 1 : 0) || wind * 0.15, dy: (B.Y - A.Y) / span };
+  };
+  const first = known[0], last = known[known.length - 1], r0 = rate(known, false), r1 = rate(known, true);
+  const ys = known.map(l => l.Y), yLo = Math.min(...ys), yHi = Math.max(...ys), pad = (yHi - yLo) * 0.12;
+  for (let m = first.index - 1; m >= 0; m--) {
+    const Y = Math.min(yHi + pad, Math.max(yLo - pad, first.Y - r0.dy * (first.index - m)));
+    Object.assign(led[m], { phi: first.phi - r0.dp * (first.index - m), Y, rho: rhoAt(Y), conf: 'spiral' }); filled++;
+  }
+  for (let m = last.index + 1; m < count; m++) {
+    const Y = Math.min(yHi + pad, Math.max(yLo - pad, last.Y + r1.dy * (m - last.index)));
+    Object.assign(led[m], { phi: last.phi + r1.dp * (m - last.index), Y, rho: rhoAt(Y), conf: 'spiral' }); filled++;
+  }
+  const leds = led.map(l => {
+    const [X, Y, Z] = xyz(l.rho, l.phi, l.Y);
+    return { index: l.index, x: X, Y, z: Z, phi: wrap2(l.phi) * 180 / Math.PI, rho: l.rho, src: l.known ? l.conf : 'spiral' };
+  });
+  const sorted = resid.sort((a, b) => a - b);
+  return { leds, info: { farSideSingles: nFlip, rejected: nRejected, pooled: nPooled, seenMulti: nMulti, seenSingle: nSingle, filled, ledSpacing: d, turns: turnsTotal, wind: wind > 0 ? 'phi increases with index' : 'phi decreases with index',
+    viewAgreementDeg: sorted.length ? sorted[sorted.length >> 1] : null } };
+}
+
+// --- main: sets[k] = the captures taken at camera position k, one per strip (all strips share the same photo geometry) ---
+function mergeMulti(sets, opts = {}) {
+  const S = sets[0].length, dir = opts.clockwise ? -1 : 1;
+  const count = opts.count || sets[0][0].count || 250;
+  // 1. one outline per view, from every strip's LEDs together; every strip is then measured against it
+  const U = sets.map(set => prepView({ angle: (set[0].angle || 0) * dir, aspect: set[0].aspect, name: set[0].name,
+    results: set.flatMap(c => c.results.filter(r => r.status === 'ok' && r.x != null)).map(r => ({ ...r, status: 'ok' })) }));
+  const P = Array.from({ length: S }, (_, s) => sets.map((set, k) => prepView({ ...set[s], angle: (set[s].angle || 0) * dir }, { cx: U[k].cx, half: U[k].half })));
+  const ref = U[0];
+
+  // 1b. camera angles: LEDs two views both decoded directly give the true angle between them
+  // (asin(q) = phi - theta in each view); strips are pooled since they share every camera position.
+  const nominal = U.map(v => v.theta), angleNote = [], theta = nominal.slice();
+  if (opts.refineAngles !== false) {
+    for (let k = 1; k < U.length; k++) {
+      let best = null;
+      const pairs = [];
+      for (let j = 0; j < k; j++) {
+        const all = [], want = wrapPi(nominal[k] - nominal[j]);
+        for (let s = 0; s < S; s++) {
+          const mj = new Map(P[s][j].pts.filter(p => Math.abs(p.q) < 0.93).map(p => [p.i, p.q]));
+          for (const p of P[s][k].pts) { const qj = mj.get(p.i); if (qj == null || Math.abs(p.q) >= 0.93) continue; all.push(Math.asin(qj) - Math.asin(p.q)); }
+        }
+        pairs.push({ j, all });
+        const ds = all.filter(d => Math.abs(wrapPi(d - want)) < 0.9);
+        if (ds.length >= 12 && (!best || ds.length > best.n)) { ds.sort((a, b) => a - b); best = { n: ds.length, j, d: ds[ds.length >> 1] }; }
+      }
+      if (!best) {
+        for (const { j, all } of pairs) {
+          const ds = all.filter(d => Math.abs(d) < 1.75).sort((a, b) => a - b);
+          if (ds.length >= 20 && ds[Math.floor(ds.length * 0.75)] - ds[Math.floor(ds.length * 0.25)] < 0.5 && (!best || ds.length > best.n)) best = { n: ds.length, j, d: ds[ds.length >> 1] };
+        }
+      }
+      if (best) theta[k] = theta[best.j] + best.d;
+      angleNote.push({ view: k, typed: nominal[k] * 180 / Math.PI, used: theta[k] * 180 / Math.PI, support: best ? best.n : 0 });
+    }
+  }
+  for (let s = 0; s < S; s++) P[s].forEach((v, k) => { v.theta = theta[k]; });
+  U.forEach((v, k) => { v.theta = theta[k]; });
+
+  // 2. vertical alignment of every view to the first: y_ref = al + be * y_v (the same for every strip)
+  U[0].al = 0; U[0].be = 1;
+  for (let s = 0; s < S; s++) { P[s][0].al = 0; P[s][0].be = 1; }
+  for (let k = 1; k < U.length; k++) {
+    const bes = [], als = [];
+    for (let s = 0; s < S; s++) {
+      const r0 = P[s][0].fy, v = P[s][k].fy;
+      let be = r0 && v && Math.abs(v.b) > 1e-6 ? r0.b / v.b : 1;
+      if (!(be > 0.5 && be < 2)) be = 1;
+      bes.push(be); als.push(r0 && v ? r0.a - be * v.a : 0);
+    }
+    let be = med(bes), al = med(als);
+    const common = [];
+    for (let s = 0; s < S; s++) for (let j = 0; j < k; j++) {
+      const m = new Map(P[s][j].pts.map(p => [p.i, P[s][j].al + P[s][j].be * p.y]));
+      for (const p of P[s][k].pts) if (m.has(p.i)) common.push([p.y, m.get(p.i)]);
+    }
+    if (common.length >= 10) { const f = robustLinfit(common.map(c => c[0]), common.map(c => c[1])); if (f && f.b > 0.5 && f.b < 2) { al = f.a; be = f.b; } }
+    U[k].al = al; U[k].be = be;
+    for (let s = 0; s < S; s++) { P[s][k].al = al; P[s][k].be = be; }
+  }
+  const rhoAt = Y => {
+    const vals = U.map(v => v.half((Y - v.al) / v.be) * v.be);
+    return Math.max(0.03, vals.reduce((s, x) => s + x, 0) / vals.length);
+  };
+
+  // 3. every strand on its own
+  const outs = P.map(Ps => solveStrand(Ps, rhoAt, count, opts));
+  const maxY = Math.max(...outs.flatMap(o => o.leds.map(l => l.Y)));       // one common floor: output Y up, lowest LED of any strip at 0
+  const result = outs.map(o => ({
+    leds: o.leds.map(l => ({ index: l.index, x: l.x, y: maxY - l.Y, z: l.z, yUp: 1 - l.Y, phi: l.phi, rho: l.rho, src: l.src })),
+    info: { ...o.info, axisX: ref.cx, frameAspect: ref.aspect, angles: theta.map(t => +(t * 180 / Math.PI).toFixed(1)), angleNote, views: U.length,
+      vertical: U.map(v => ({ name: v.name, angle: v.theta * 180 / Math.PI, scale: +v.be.toFixed(3), shift: +v.al.toFixed(3) })) },
+  }));
+  return result;
+}
+
+// one strip, several views (the original interface)
+function mergeViews(views, opts = {}) {
+  return mergeMulti(views.map(v => [v]), opts)[0];
+}
+
+
+const $ = id => document.getElementById(id);
+const HUES = [200, 28, 285, 135, 340];
+let files = [], models = [], srvList = [];
+
+// ---------- loading ----------
+function addCapture(name, j) {
+  const joint = Array.isArray(j.strips) && j.strips.length > 1;          // several strips scanned together from the same spots
+  if (!joint && !Array.isArray(j.results)) throw new Error('no results array');
+  if (files.some(f => f.name === name)) return;
+  if (joint) { files.push({ name, data: j, joint: true, strip: j.strips.map(s => String(s.strip || s.device || '?')).join('+'), label: j.strips.map(s => s.stripName || s.strip).join(' + '),
+    ok: j.strips.reduce((a, s) => a + s.results.filter(r => r.status === 'ok').length, 0), angle: 0 }); return; }
+  files.push({ name, data: j, strip: String(j.strip || j.device || 'unknown'), label: j.stripName || '', ok: j.results.filter(r => r.status === 'ok').length, angle: 0 });
+}
+function reangle() {
+  const groups = groupsOf();
+  for (const g of groups) {
+    g.files.sort((a, b) => a.name.localeCompare(b.name));
+    const saved = g.files.map(f => +f.data.angle || 0), spread = Math.max(...saved) - Math.min(...saved);
+    g.files.forEach((f, i) => f.angle = spread > 0.5 ? saved[i] : Math.round(360 * i / g.files.length));   // angles typed at scan time, else evenly spread
+  }
+  render();
+}
+function groupsOf() {
+  const order = [], map = new Map();
+  for (const f of files) { if (!map.has(f.strip)) { map.set(f.strip, { strip: f.strip, label: f.label, files: [] }); order.push(f.strip); } map.get(f.strip).files.push(f); }
+  return order.map(k => map.get(k));
+}
+$('pick').onchange = async e => {
+  for (const f of e.target.files) { try { addCapture(f.name, JSON.parse(await f.text())); } catch (err) { alert(f.name + ': not a capture file (' + err.message + ')'); } }
+  e.target.value = ''; reangle();
+};
+async function loadServer() {
+  const el = $('srv');
+  try { srvList = (await (await fetch('/api/captures')).json()).captures || []; }
+  catch (e) { el.innerHTML = '<div class="m">Server list not available (open this page from the server to use it).</div>'; return; }
+  if (!srvList.length) { el.innerHTML = '<div class="m">Nothing yet. Run a capture on the phone.</div>'; $('addsrv').disabled = $('addall').disabled = true; return; }
+  el.innerHTML = '';
+  const by = new Map(); srvList.forEach(c => { const k = String(c.device || 'unknown'); if (!by.has(k)) by.set(k, []); by.get(k).push(c); });
+  for (const [dev, list] of by) {
+    const h = document.createElement('div'); h.className = 'm'; h.style.margin = '8px 0 2px'; h.textContent = 'Strip ' + (list[0].strips ? list[0].strips.join(' + ') : dev) + ' · ' + list.length + ' capture' + (list.length > 1 ? 's' : ''); el.appendChild(h);
+    list.forEach(c => {
+      const d = document.createElement('div'); d.className = 'f';
+      const t = new Date(c.time * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      d.innerHTML = `<input type="checkbox" data-n="${c.name}"><div class="n">${c.name}<div class="m">${t} · ${c.seen}/${c.count} LEDs read directly</div></div>`;
+      el.appendChild(d);
+    });
+  }
+  $('addsrv').disabled = $('addall').disabled = false;
+}
+async function addFromServer(names) {
+  for (const n of names) {
+    if (files.some(f => f.name === n)) continue;
+    try { addCapture(n, (await (await fetch('/api/captures/' + encodeURIComponent(n))).json()).data); } catch (err) { alert(n + ': ' + err.message); }
+  }
+  reangle();
+}
+$('addsrv').onclick = () => addFromServer([...document.querySelectorAll('#srv input:checked')].map(i => i.dataset.n));
+$('addall').onclick = () => addFromServer(srvList.map(c => c.name));
+$('refresh').onclick = loadServer; loadServer();
+$('clear').onclick = () => { files = []; models = []; $('outcard').hidden = true; render(); };
+
+function render() {
+  $('strips').hidden = !files.length;
+  const el = $('groups'); el.innerHTML = '';
+  groupsOf().forEach((g, gi) => {
+    const box = document.createElement('div'); box.style.marginTop = gi ? '14px' : '8px';
+    box.innerHTML = `<h2><span class="sw" style="background:hsl(${HUES[gi % HUES.length]},80%,60%)"></span>${g.files[0].joint ? 'Strips scanned together' : 'Strip scanned on its own'} <span class="m">· ${g.files[0].joint ? '' : 'strip '}${g.label || g.strip}</span></h2>`;
+    g.files.forEach(f => {
+      const d = document.createElement('div'); d.className = 'f';
+      d.innerHTML = `<div class="n">${f.name}<div class="m">${f.ok} LEDs read directly · ${f.data.count || '?'} per strip${f.joint ? ', ' + f.data.strips.length + ' strips' : ''}</div></div>
+        <label class="m">angle° <input class="ang" type="number" step="5" value="${f.angle}"></label><button>✕</button>`;
+      d.querySelector('input').oninput = e => f.angle = +e.target.value || 0;
+      d.querySelector('button').onclick = () => { files.splice(files.indexOf(f), 1); render(); };
+      box.appendChild(d);
+    });
+    el.appendChild(box);
+  });
+}
+
+// ---------- merge each strand ----------
+function mergeGroup(g) {                                       // -> one result per strip in the group
+  const cnt = g.files[0].data.count, joint = !!g.files[0].joint;
+  const sets = g.files.map(f => (joint ? f.data.strips : [f.data]).map(s => ({ angle: f.angle, aspect: f.data.aspect, count: f.data.count, results: s.results, name: f.name })));
+  if (sets.length < 2) return mergeMulti(sets, { count: cnt });
+  const agree = outs => { const v = outs.map(o => o.info.viewAgreementDeg).filter(x => x != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : 99; };
+  const a = mergeMulti(sets, { count: cnt, clockwise: false }), b = mergeMulti(sets, { count: cnt, clockwise: true });
+  return agree(b) < agree(a) ? b : a;
+}
+$('go').onclick = () => {
+  const msg = $('msg'); $('outcard').hidden = false; msg.className = ''; models = [];
+  try {
+    const lines = [];
+    const groups = groupsOf();
+    groups.forEach((g, gi) => {
+      const joint = !!g.files[0].joint, outs = mergeGroup(g), adj = { rot: 0, up: 0, h: 100, w: 100, dx: 0, dz: 0, mirror: false };   // one adjustment for strips merged together
+      const strips = joint ? g.files[0].data.strips : [{ strip: g.strip, stripName: g.label }];
+      outs.forEach((out, si) => {
+        const i = out.info, seen = i.seenMulti + i.seenSingle, sp = strips[si];
+        models.push({ strip: String(sp.strip || sp.device || g.strip), label: sp.stripName || (joint ? '' : g.label), out, hue: HUES[models.length % HUES.length], show: true, adj: joint ? adj : { ...adj }, gi, jid: joint ? gi : -1, first: si === 0 });
+        lines.push(`Strand ${models.length} (strip ${sp.stripName || sp.strip}): ${g.files.length} view${g.files.length > 1 ? 's' : ''}${joint ? ', merged together with the other strips of the scan' : ''}, ${seen} of ${out.leds.length} LEDs seen directly, ${i.filled} filled${i.rejected ? ', ' + i.rejected + ' misread re-estimated' : ''}`);
+      });
+    });
+    msg.textContent = lines.join('\n') + (groups.length > 1 ? '\n\nEach group is centred and sized to the same height. Line the groups up with the sliders below: Rotation first (watch the top view), then Up / down, Height and Width.' : (models.length > 1 ? '\n\nThese strips were scanned together from the same spots, so they are already lined up.' : ''));
+    buildAdjust(); draw();
+  } catch (e) { msg.className = 'err'; msg.textContent = e.message; models = []; }
+};
+
+// ---------- placing the strands in one world ----------
+function world() {
+  const out = [], Hj = {};
+  models.forEach(m => { if (m.jid >= 0) Hj[m.jid] = Math.max(Hj[m.jid] || 0, ...m.out.leds.map(l => l.y)); });      // strips merged together share one height
+  for (const m of models) {
+    const L = m.out.leds, a = m.adj, r = a.rot * Math.PI / 180, cs = Math.cos(r), sn = Math.sin(r), sw = a.w / 100, sh = a.h / 100;
+    const Hs = (m.jid >= 0 ? Hj[m.jid] : Math.max(...L.map(l => l.y))) || 1;                       // every strand starts at height 1, base at 0, axis at the origin
+    out.push(L.map(l => {
+      const x0 = (a.mirror ? -l.x : l.x) / Hs, z0 = l.z / Hs, y0 = l.y / Hs;
+      return { index: l.index, src: l.src, x: sw * (x0 * cs + z0 * sn) + a.dx, z: sw * (z0 * cs - x0 * sn) + a.dz, y: sh * y0 + a.up };
+    }));
+  }
+  // whole group scaled so its height is 1 and its base is 0
+  let lo = Infinity, hi = -Infinity; out.forEach(p => p.forEach(q => { lo = Math.min(lo, q.y); hi = Math.max(hi, q.y); }));
+  const H = hi - lo || 1; out.forEach(p => p.forEach(q => { q.y = (q.y - lo) / H; q.x /= H; q.z /= H; }));
+  return out;
+}
+
+// ---------- adjust UI ----------
+const SL = [['rot', 'Rotation °', -180, 180, 1], ['up', 'Up / down', -0.5, 0.5, 0.005], ['h', 'Height %', 50, 150, 1], ['w', 'Width %', 50, 150, 1], ['dx', 'Left / right', -0.5, 0.5, 0.005], ['dz', 'Front / back', -0.5, 0.5, 0.005]];
+function buildAdjust() {
+  const el = $('adjust'); el.innerHTML = '';
+  models.forEach((m, mi) => {
+    const d = document.createElement('div'); d.style.marginTop = '14px';
+    d.innerHTML = `<div class="row"><h2 class="grow"><span class="sw" style="background:hsl(${m.hue},80%,60%)"></span>Strand ${mi + 1} <span class="m">· strip ${m.label || m.strip}</span></h2>
+      <label class="m"><input type="checkbox" data-k="show" ${m.show ? 'checked' : ''}> show</label>
+      ${m.first && m.gi ? `<label class="m"><input type="checkbox" data-k="mirror"> mirror</label><button data-k="reset">Reset</button>` : ''}</div>`;
+    if (m.first && m.gi) {
+      const g = document.createElement('div'); g.className = 'adj';
+      SL.forEach(([k, label, lo, hi, st]) => { g.insertAdjacentHTML('beforeend', `<label>${label}</label><input type="range" data-s="${k}" min="${lo}" max="${hi}" step="${st}" value="${m.adj[k]}"><span class="v" data-v="${k}"></span>`); });
+      g._m = m; d.appendChild(g);
+    } else d.insertAdjacentHTML('beforeend', '<div class="cap">' + (!m.first ? 'Lined up with the other strips of its scan automatically.' : 'Reference. The other groups move to match it.') + '</div>');
+    d.querySelectorAll('input[data-s]').forEach(inp => inp.oninput = () => { m.adj[inp.dataset.s] = +inp.value; showVals(); draw(); });
+    d.querySelector('input[data-k=show]').onchange = e => { m.show = e.target.checked; draw(); };
+    const mi2 = d.querySelector('input[data-k=mirror]'); if (mi2) mi2.onchange = e => { m.adj.mirror = e.target.checked; draw(); };
+    const rs = d.querySelector('button[data-k=reset]'); if (rs) rs.onclick = () => { Object.assign(m.adj, { rot: 0, up: 0, h: 100, w: 100, dx: 0, dz: 0, mirror: false }); buildAdjust(); draw(); };
+    el.appendChild(d);
+  });
+  showVals();
+}
+function showVals() { models.forEach((m, mi) => { /* values are shown per slider row */ });
+  document.querySelectorAll('#adjust .adj').forEach((g, gi) => { const m = g._m; if (!m) return;
+    g.querySelectorAll('[data-v]').forEach(s => { const k = s.dataset.v, v = m.adj[k]; s.textContent = k === 'rot' ? v + '°' : (k === 'h' || k === 'w') ? v + '%' : (v * 100).toFixed(1) + '%'; }); }); }
+
+// ---------- drawing ----------
+let yaw = 0.6, pitch = 0.25;
+function fit(c) { const r = c.getBoundingClientRect(), d = devicePixelRatio || 1; c.width = r.width * d; c.height = r.height * d; return c.getContext('2d'); }
+const colour = (m, i, n, a = 1) => `hsla(${m.hue},85%,${42 + 36 * i / n}%,${a})`;
+function wireSegs(g, P, pts, m, fade) {
+  const w = (+$('wt').value || 3) * devicePixelRatio, n = pts.length; let dmin = Infinity, dmax = -Infinity; P.forEach(p => { dmin = Math.min(dmin, p.d); dmax = Math.max(dmax, p.d); });
+  g.lineCap = 'round';
+  for (let i = 1; i < n; i++) {
+    const a = P[i - 1], b = P[i], guess = pts[i].src === 'spiral' || pts[i - 1].src === 'spiral';
+    const near = fade && dmax > dmin ? ((a.d + b.d) / 2 - dmin) / (dmax - dmin) : 1;
+    g.strokeStyle = colour(m, i, n, (guess ? 0.5 : 0.9) * (fade ? 0.35 + 0.65 * near : 1));
+    g.lineWidth = guess ? w * 0.8 : w; g.setLineDash(guess ? [5 * devicePixelRatio, 4 * devicePixelRatio] : []);
+    g.beginPath(); g.moveTo(a.X, a.Y); g.lineTo(b.X, b.Y); g.stroke();
+  }
+  g.setLineDash([]);
+}
+function draw() {
+  if (!models.length) return; const W3 = world();
+  { const c = $('c3'), g = fit(c), W = c.width, H = c.height, s = Math.min(W, H) * 0.42; g.clearRect(0, 0, W, H);
+    const all = [];
+    models.forEach((m, mi) => { if (!m.show) return; const pts = W3[mi];
+      const P = pts.map(l => { const x = l.x * Math.cos(yaw) + l.z * Math.sin(yaw), z = -l.x * Math.sin(yaw) + l.z * Math.cos(yaw), y = l.y - 0.5;
+        return { X: W / 2 + x * s * 1.6, Y: H / 2 - (y * Math.cos(pitch) - z * Math.sin(pitch)) * s * 2, d: z * Math.cos(pitch) + y * Math.sin(pitch) }; });
+      if ($('wire').checked) wireSegs(g, P, pts, m, true);
+      P.forEach((p, i) => all.push({ p, m, i, n: pts.length, guess: pts[i].src === 'spiral' })); });
+    all.sort((a, b) => a.p.d - b.p.d).forEach(o => { g.fillStyle = colour(o.m, o.i, o.n, o.guess ? 0.65 : 1); g.beginPath(); g.arc(o.p.X, o.p.Y, (o.guess ? 2.6 : 3.6) * devicePixelRatio, 0, 7); g.fill(); }); }
+  { const c = $('ct'), g = fit(c), W = c.width, H = c.height;
+    let R = 0.05; W3.forEach(p => p.forEach(l => R = Math.max(R, Math.hypot(l.x, l.z)))); const s = Math.min(W, H) * 0.45 / R;
+    g.clearRect(0, 0, W, H); g.strokeStyle = '#2a3340'; g.beginPath(); g.moveTo(W / 2, 0); g.lineTo(W / 2, H); g.moveTo(0, H / 2); g.lineTo(W, H / 2); g.stroke();
+    g.fillStyle = '#8b97a8'; g.font = `${12 * devicePixelRatio}px system-ui`; g.fillText('0° camera ↓', 8, H - 10);
+    models.forEach((m, mi) => { if (!m.show) return; const pts = W3[mi], P = pts.map(l => ({ X: W / 2 + l.x * s, Y: H / 2 + l.z * s, d: 0 }));
+      if ($('wire').checked) wireSegs(g, P, pts, m, false);
+      P.forEach((p, i) => { g.fillStyle = colour(m, i, pts.length, pts[i].src === 'spiral' ? 0.65 : 1); g.beginPath(); g.arc(p.X, p.Y, 3 * devicePixelRatio, 0, 7); g.fill(); }); });
+  }
+}
+{ const c = $('c3'); let d = null;
+  c.onpointerdown = e => { d = [e.clientX, e.clientY]; c.setPointerCapture(e.pointerId); };
+  c.onpointermove = e => { if (!d) return; yaw += (e.clientX - d[0]) * 0.01; pitch = Math.max(-1.2, Math.min(1.2, pitch + (e.clientY - d[1]) * 0.01)); d = [e.clientX, e.clientY]; draw(); };
+  c.onpointerup = () => d = null; }
+$('wire').onchange = draw; $('wt').oninput = draw; addEventListener('resize', draw);
+
+// ---------- export ----------
+function save(name, text, type) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click(); }
+function rows() { const W3 = world(); return models.flatMap((m, mi) => W3[mi].map(l => ({ strand: mi + 1, strip: m.label || m.strip, address: m.strip, index: l.index, x: +l.x.toFixed(4), y: +l.y.toFixed(4), z: +l.z.toFixed(4), source: l.src }))); }
+$('dlj').onclick = () => models.length && save('tree_3d_multi.json', JSON.stringify({ version: 1, units: 'whole tree height = 1, base at 0; x right, z toward the 0° camera, y up', strands: models.map((m, mi) => ({ strand: mi + 1, strip: m.label || m.strip, address: m.strip, adjust: m.adj, leds: rows().filter(r => r.strand === mi + 1).map(({ strand, strip, address, ...r }) => r) })) }, null, 1), 'application/json');
+$('dlc').onclick = () => models.length && save('tree_3d_multi.csv', 'strand,strip,address,index,x,y,z,source\n' + rows().map(r => [r.strand, r.strip, r.address, r.index, r.x, r.y, r.z, r.source].join(',')).join('\n'), 'text/csv');
+</script></body></html>
