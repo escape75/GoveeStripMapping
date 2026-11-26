@@ -4,7 +4,7 @@
  "strands": [
   {
    "strand": 1,
-   "strip": "Govee_H6870_6778",
+   "strip": "Govee_H6870_XXXX",
    "address": "XXXXXXXXXXXX",
    "adjust": {
     "rot": 0,
@@ -1770,7 +1770,7 @@
   },
   {
    "strand": 2,
-   "strip": "Govee_H6870_8274",
+   "strip": "Govee_H6870_XXXX",
    "address": "XXXXXXXXXXXX",
    "adjust": {
     "rot": 0,
