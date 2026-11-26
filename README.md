@@ -11,7 +11,7 @@ QUICK START (5 steps)
 
      python313.zip
      .
-     import site  <- remove the # symbol
+     import site  &lt;- remove the # symbol
 
 3. Install pip if needed (minimal portable Python may not have it):
 
@@ -23,8 +23,8 @@ QUICK START (5 steps)
    Create a `requirements.txt` file with the following content and run:
    ```text
    flask==2.3.3
-   bleak>=1.0
-   cryptography>=42.0
+   bleak&gt;=1.0
+   cryptography&gt;=42.0
    prompt_toolkit
    ```
    python.exe -m pip install -r requirements.txt
@@ -51,16 +51,16 @@ Usage:  python.exe govee_strip.py leds [options]
 
 Options:
   --scan             List nearby BLE devices (Govee H6870/H6871)
-  --name <string>    Device name suffix to match (default: "6871")
-  --address <addr>   Connect using Bluetooth address instead of name
-  --on <leds>        Light specific LEDs (e.g. "0-9,100", "217", "5-10")
-  --color <rgb>      Color for --on (RRGGBB or names: red, green, blue)
-  --fill <color>     Set whole strip to one color
+  --name &lt;string&gt;    Device name suffix to match (default: "6871")
+  --address &lt;addr&gt;   Connect using Bluetooth address instead of name
+  --on &lt;leds&gt;        Light specific LEDs (e.g. "0-9,100", "217", "5-10")
+  --color &lt;rgb&gt;      Color for --on (RRGGBB or names: red, green, blue)
+  --fill &lt;color&gt;     Set whole strip to one color
   --power on|off     Power the strip on or off
-  --brightness <n>   Brightness 1-100
-  --background <c>   Background color (RRGGBB or "off", default: off)
-  --effect <e>       Effect mode: twinkle, fade, breathe, static, hex code
-  --speed <n>        Effect speed 0-100
+  --brightness &lt;n&gt;   Brightness 1-100
+  --background &lt;c&gt;   Background color (RRGGBB or "off", default: off)
+  --effect &lt;e&gt;       Effect mode: twinkle, fade, breathe, static, hex code
+  --speed &lt;n&gt;        Effect speed 0-100
   -v, --verbose      Print decrypted BLE traffic
 
 Example commands:
@@ -70,18 +70,18 @@ Example commands:
 
 tree_effect.py - Vertical bar effect on mapped 3D tree
 -----------------------------------------------
-Usage:  python.exe tree_effect.py <tree_3d_multi.json> [options]
+Usage:  python.exe tree_effect.py &lt;tree_3d_multi.json&gt; [options]
 
 Options:
-  --strand <n>       Which strand in JSON (default: 1)
-  --base <b>         Base color/rainbow/spin (default: "rainbow")
-  --width <deg>      Bar width in degrees around the tree (default: 30)
-  --turns <t>        Bar speed in turns/sec (default: 0.25)
-  --hues <n>         Rainbow color steps, fewer = faster frames (default: 8)
-  --brightness <n>   LED brightness 1-100 (default: 100)
-  --seed <n>         Random seed for reproducible animation
-  --name <string>    Device name suffix (uses address from JSON if not given)
-  --address <addr>   Bluetooth address; give it twice for two strips
+  --strand &lt;n&gt;       Which strand in JSON (default: 1)
+  --base &lt;b&gt;         Base color/rainbow/spin (default: "rainbow")
+  --width &lt;deg&gt;      Bar width in degrees around the tree (default: 30)
+  --turns &lt;t&gt;        Bar speed in turns/sec (default: 0.25)
+  --hues &lt;n&gt;         Rainbow color steps, fewer = faster frames (default: 8)
+  --brightness &lt;n&gt;   LED brightness 1-100 (default: 100)
+  --seed &lt;n&gt;         Random seed for reproducible animation
+  --name &lt;string&gt;    Device name suffix (uses address from JSON if not given)
+  --address &lt;addr&gt;   Bluetooth address; give it twice for two strips
   --dry              Dry run: print stats without touching LEDs
 
 Example commands:
@@ -102,7 +102,7 @@ Defaults:
 
 Example:
   python.exe server.py
-  # Access from phone on same Wi-Fi: https://<PC-IP>:5000
+  # Access from phone on same Wi-Fi: https://&lt;PC-IP&gt;:5000
 
 ================================================================================
 USAGE MODES (Choose One After Installation)
@@ -119,7 +119,7 @@ MODE B - Tree Effect Demo
 
 MODE C - Web Server (Camera Mapping & Remote Control)
   python.exe server.py                            # Start on port 5000
-  # Open https://<PC-IP>:5000 on phone for camera mapping
+  # Open https://&lt;PC-IP&gt;:5000 on phone for camera mapping
 
 ================================================================================
 POST-INSTALLATION CHECKLIST
