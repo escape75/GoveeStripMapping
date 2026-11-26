@@ -1,5 +1,11 @@
 <pre>
 
+The goal of this project was to investigate the feasibility of a 3D mapping solution capable of using camera vision
+to identify and map the individual LED positions of two or more Govee light strips wrapped around a Christmas tree.
+   
+   The sample.mp4 video shows the result.
+   
+   
 QUICK START (5 steps)
 ----------------------
 1. Extract portable-python (python-3.13.8-embed-amd64) to your workspace folder
