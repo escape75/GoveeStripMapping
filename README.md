@@ -1,9 +1,10 @@
 <pre>
 
-The goal of this project was to investigate the feasibility of a 3D mapping solution capable of using camera vision
-to identify and map the individual LED positions of two or more Govee light strips wrapped around a Christmas tree.
+The goal of this project was to investigate the feasibility of a 3D mapping solution
+capable of using camera vision to identify and map the individual LED positions
+of two or more Govee light strips wrapped around a Christmas tree.
    
-   The sample.mp4 video shows the result.
+   The sample.mp4 video shows the result obtained with 7 captures.
    
    
 QUICK START (5 steps)
