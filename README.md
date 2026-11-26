@@ -1,3 +1,5 @@
+<pre>
+
 QUICK START (5 steps)
 ----------------------
 1. Extract portable-python (python-3.13.8-embed-amd64) to your workspace folder
@@ -200,3 +202,5 @@ Browser requirements (for web server + mapping UI):
 ================================================================================
 END OF INSTALLATION GUIDE
 ================================================================================
+
+</pre>
